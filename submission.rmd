@@ -1,0 +1,902 @@
+---
+title: "Econ 129 Final Submission: Education Structure, Urban Cluster, and Political Polarization in the USA"
+author: "Leo Zaiyang Zhang"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    toc: true
+  html_document:
+    toc: true
+    toc_float: true
+    theme: flatly
+    code_folding: hide
+---
+# Citation for Gen AI
+I used all sorts of SOTA models from OpenAI, Anthropic, Google and DeepSeek to brainstorm and code. However, without significant man power and domain knowledge, this piece will not be the way it is presented here.
+
+# Data
+
+Data is from:
+https://www2.census.gov/geo/tiger/GENZ2015/shp/cb_2015_us_state_500k.zip  
+https://ers.usda.gov/sites/default/files/_laserfiche/DataFiles/48747/Education2023.csv  
+
+\textbf{Note:} The path need to be modified to your local path do successfully run the R Markdown file. An SOTA AI can do that for you, however, they are very likely to make mistakes without careful promtpping and human supervision.
+
+# What I have done, or, Introduction:
+Basically, I observe the change of education structure of US population in both state and county (with in some state) level. The way I do that is turn the statistic of people with certain level of education (less that hs, hs, some college, and full college degree) into ratio (so that I can compare) and see how that change across years by taking differentiation. In map, that is shown in quantile with color. Blue  means growth while red means decrease.
+
+In national level we observe steady improvement in overall education structure but some special in California. To dig deeper (with inspiration from the previous presentation), I take a deep dive into county level trend in CA, WA, MA and TX. All of which are somewhat high tech economic engine of the USA. 
+
+Seems like there is a clustering of highly educated people surrounding cities with the city growing in a path dependent way with a sharp polarization of education level across those regions. Data supports that and shows clear correlation with China's join of WTO and the golden era of last round globalization.
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE, fig.width=14, fig.height=10)
+library(tidyverse)
+library(sf)
+library(RColorBrewer)
+library(scales)
+library(knitr)
+library(kableExtra)
+library(dplyr)
+library(viridis)
+library(corrplot)
+library(gridExtra)
+library(cowplot)
+```
+
+## Data Loading and Processing (code not shown)
+
+```{r load_data, echo=FALSE}
+# Load education data
+education_data <- read.csv("../ver_0/Data_my/Education2023.csv", stringsAsFactors = FALSE)
+
+# Load geographic data
+states_sf <- st_read("../ver_0/Data_my/cb_2015_us_state_500k/cb_2015_us_state_500k.shp", quiet = TRUE)
+counties_sf <- st_read("../ver_0/Data_my/cb_2015_us_county_500k/cb_2015_us_county_500k.shp", quiet = TRUE)
+
+# Prepare state names for joining
+states_sf$State <- states_sf$NAME
+counties_sf <- counties_sf %>%
+  mutate(GEOID = as.character(GEOID))
+```
+
+# National-Level Analysis
+Form the 4 pictures below, it is very obvious that the education structure of the USA keeps improving, we see the structure continue goes higher. Also, from the color difference with in the maps we can see the different speed across states, which I speculate is because the initial status of each state is different, with south staring in behind (which correspond to my shallow understanding of US history)
+
+However, the most interesting part is California, which observe a rebound of HS graduates after 2000. This makes me think about the polarization and income divergence across skill set in the USA after Reagan reform, esp. in Metropolitan areas driving the US economy.
+
+This is why I turned into county level and do a cross examination for California, Texas, Washington State and Massachusetts, which are the 4 states with high tech industry concentration. 
+
+
+## National-Level Data Processing
+
+```{r process_state_data, echo=FALSE}
+# Filter for state-level data only (FIPS codes divisible by 1000, but not 0)
+state_data <- education_data %>%
+  filter(FIPS.Code %% 1000 == 0 & FIPS.Code != 0)
+
+# Define education levels and their correct percentage patterns
+education_levels <- list(
+  "bachelors_plus" = list(
+    "1970" = "Percent of adults completing four years of college or higher, 1970",
+    "1980" = "Percent of adults completing four years of college or higher, 1980", 
+    "1990" = "Percent of adults with a bachelor's degree or higher, 1990",
+    "2000" = "Percent of adults with a bachelor's degree or higher, 2000",
+    "2008" = "Percent of adults with a bachelor's degree or higher, 2008-12",
+    "2019" = "Percent of adults with a bachelor's degree or higher, 2019-23"
+  ),
+  "some_college" = list(
+    "1970" = "Percent of adults completing some college (1-3 years), 1970",
+    "1980" = "Percent of adults completing some college (1-3 years), 1980",
+    "1990" = "Percent of adults completing some college or associate degree, 1990", 
+    "2000" = "Percent of adults completing some college or associate degree, 2000",
+    "2008" = "Percent of adults completing some college or associate degree, 2008-12",
+    "2019" = "Percent of adults completing some college or associate degree, 2019-23"
+  ),
+  "less_than_hs" = list(
+    "1970" = "Percent of adults with less than a high school diploma, 1970",
+    "1980" = "Percent of adults with less than a high school diploma, 1980",
+    "1990" = "Percent of adults who are not high school graduates, 1990",
+    "2000" = "Percent of adults who are not high school graduates, 2000", 
+    "2008" = "Percent of adults who are not high school graduates, 2008-12",
+    "2019" = "Percent of adults who are not high school graduates, 2019-23"
+  ),
+  "hs_only" = list(
+    "1970" = "Percent of adults with a high school diploma only, 1970",
+    "1980" = "Percent of adults with a high school diploma only, 1980",
+    "1990" = "Percent of adults who are high school graduates (or equivalent), 1990",
+    "2000" = "Percent of adults who are high school graduates (or equivalent), 2000",
+    "2008" = "Percent of adults who are high school graduates (or equivalent), 2008-12", 
+    "2019" = "Percent of adults who are high school graduates (or equivalent), 2019-23"
+  )
+)
+
+# Function to extract state data for specific education level and year
+extract_state_data <- function(data, pattern) {
+  filtered_data <- data %>%
+    filter(Attribute == pattern) %>%
+    select(State, Value) %>%
+    filter(!is.na(Value))
+  return(filtered_data)
+}
+
+# Process each education level
+state_results <- list()
+
+for (level_name in names(education_levels)) {
+  level_data <- tibble(State = character())
+  
+  for (year in names(education_levels[[level_name]])) {
+    pattern <- education_levels[[level_name]][[year]]
+    year_data <- extract_state_data(state_data, pattern) %>%
+      rename(!!year := Value)
+    
+    if (nrow(level_data) == 0) {
+      level_data <- year_data
+    } else {
+      level_data <- level_data %>%
+        full_join(year_data, by = "State")
+    }
+  }
+  
+  # Calculate differences
+  level_data <- level_data %>%
+    mutate(
+      diff_1970_1980 = `1980` - `1970`,
+      diff_1980_1990 = `1990` - `1980`, 
+      diff_1990_2000 = `2000` - `1990`,
+      diff_2000_2008 = `2008` - `2000`,
+      diff_2008_2019 = `2019` - `2008`
+    )
+  
+  state_results[[level_name]] <- level_data
+}
+
+# Add STATEFP to each state result for proper joining with geographic data
+for (level_name in names(state_results)) {
+  state_results[[level_name]] <- state_results[[level_name]] %>%
+    left_join(
+      state_data %>% 
+        select(State, FIPS.Code) %>% 
+        distinct() %>%
+        # Divide FIPS code by 1000 to get state-level code
+        mutate(STATEFP = as.character(FIPS.Code %/% 1000)) %>%
+        # Ensure single-digit state FIPS codes have a leading zero
+        mutate(STATEFP = ifelse(nchar(STATEFP) == 1, paste0("0", STATEFP), STATEFP)),
+      by = "State"
+    ) %>%
+    select(-FIPS.Code) # Remove original FIPS code column, keep only processed STATEFP
+}
+
+# Check the results
+cat("State-level data processing complete.\n")
+for (level in names(state_results)) {
+  cat(paste("Level:", level, "- Number of states:", nrow(state_results[[level]]), "\n"))
+}
+```
+
+## National-Level Difference Maps
+
+```{r national_difference_maps, echo=FALSE, fig.width=16, fig.height=12}
+# Function to create individual state difference maps for combining
+create_single_state_diff_map <- function(level_name, diff_period, title_suffix) {
+  # Join with geographic data
+  map_data <- states_sf %>%
+    left_join(state_results[[level_name]], by = "STATEFP")
+  
+  # Handle missing data and calculate breaks
+  values <- map_data[[diff_period]]
+  values <- values[!is.na(values)]
+  
+  if (length(values) == 0) {
+    return(ggplot() + ggtitle(paste("No data available for", title_suffix)))
+  }
+   
+  max_abs_val <- max(abs(values), na.rm = TRUE)
+  if (!is.finite(max_abs_val) || max_abs_val == 0) {
+    max_abs_val <- 5
+  }
+  limit_val <- ceiling(max_abs_val / 2) * 2
+  breaks <- seq(-limit_val, limit_val, length.out = 9)
+  
+  # Create muted red-blue color palette (red for decrease, blue for increase)
+  colors <- colorRampPalette(c("#CC6B3F", "#E19673", "#F0C2A8", "#FFEEDD", "#F0F0F0", "#D4DEED", "#B8C9DF", "#9BB3D1"))(11)
+  
+  # Create map
+  ggplot(map_data) +
+    geom_sf(aes(fill = !!sym(diff_period)), color = "white", size = 0.2) +
+    scale_fill_gradientn(
+      colors = colors,
+      limits = c(-limit_val, limit_val),
+      breaks = breaks,
+      labels = paste0(round(breaks, 1), "%"),
+      name = "Percentage\nPoint Change",
+      na.value = "grey90"
+    ) +
+    labs(
+      title = title_suffix
+    ) +
+    theme_void() +
+    theme(
+      plot.title = element_text(size = 12, face = "bold", hjust = 0.5),
+      legend.position = "none",
+      plot.margin = margin(0.2, 0.2, 0.2, 0.2, "cm")
+    ) +
+    coord_sf(xlim = c(-125, -66), ylim = c(24, 50), datum = NA)
+}
+
+# Generate combined national difference maps
+diff_periods <- c("diff_1970_1980", "diff_1980_1990", "diff_1990_2000", 
+                  "diff_2000_2008", "diff_2008_2019")
+period_labels <- c("1970-1980", "1980-1990", "1990-2000", "2000-2008", "2008-2019")
+level_titles <- c("bachelors_plus" = "Bachelor's Degree or Higher",
+                  "some_college" = "Some College or Associate Degree", 
+                  "less_than_hs" = "Less than High School Graduate",
+                  "hs_only" = "High School Graduate Only")
+
+for (level in names(education_levels)) {
+  cat("### ", level_titles[level], "\n\n")
+  
+  # Create individual maps
+  plot_list <- list()
+  for (i in seq_along(diff_periods)) {
+    period <- diff_periods[i]
+    label <- period_labels[i]
+    p <- create_single_state_diff_map(level, period, label)
+    plot_list[[i]] <- p
+  }
+  
+  # Create a shared legend
+  legend_data <- states_sf %>%
+    left_join(state_results[[level]], by = "STATEFP")
+  all_values <- c()
+  for (period in diff_periods) {
+    values <- legend_data[[period]]
+    values <- values[!is.na(values)]
+    all_values <- c(all_values, values)
+  }
+  
+  max_abs_val <- max(abs(all_values), na.rm = TRUE)
+  if (!is.finite(max_abs_val) || max_abs_val == 0) {
+    max_abs_val <- 5
+  }
+  limit_val <- ceiling(max_abs_val / 2) * 2
+  breaks <- seq(-limit_val, limit_val, length.out = 9)
+  colors <- colorRampPalette(c("#CC6B3F", "#E19673", "#F0C2A8", "#FFEEDD", "#F0F0F0", "#D4DEED", "#B8C9DF", "#9BB3D1"))(11)
+  
+  # Create a dummy plot for legend
+  legend_plot <- ggplot(legend_data) +
+    geom_sf(aes(fill = diff_1970_1980), color = "white", size = 0.2) +
+    scale_fill_gradientn(
+      colors = colors,
+      limits = c(-limit_val, limit_val),
+      breaks = breaks,
+      labels = paste0(round(breaks, 1), "%"),
+      name = "Percentage\nPoint Change",
+      na.value = "grey90"
+    ) +
+    theme_void() +
+    theme(legend.position = "right")
+  
+  # Extract legend
+  legend <- get_legend(legend_plot)
+  
+  # Combine plots in 2x3 grid with shared legend
+  combined_plot <- plot_grid(
+    plot_grid(plotlist = plot_list, ncol = 3, nrow = 2),
+    legend,
+    ncol = 2,
+    rel_widths = c(1, 0.15)
+  )
+  
+  # Add overall title
+  title <- ggdraw() + 
+    draw_label(paste("National", level_titles[level], "Change Over Time"), 
+               fontface = 'bold', size = 16)
+  
+  final_plot <- plot_grid(title, combined_plot, ncol = 1, rel_heights = c(0.08, 1))
+  
+  print(final_plot)
+  cat("\n\n")
+}
+```
+
+# County-Level Analysis in CA, TX, WA, MA
+
+From the map below we can observe the following trends:
+
+1. college graduates stick very close to each other and keep clustering over main cities in the past half century.
+
+2. ther are some state level divergence but overall people who do not complete their compulsory education is decreasing. This is a very good sign that indicates the social work in the USA took some effect.
+
+3. People do not have a college degree are clusting more in places other that metropolitan area and shaping a polarization across geology.
+
+Basically the models we covered during the class explain those trends well. Education differentiated Americans with different skill set. That leads into different income and job, and eventually lead to polarized geological distribution with in cities and surrounding cities.
+
+
+## County-Level Data Processing (Code not shown here)
+
+```{r process_county_data, echo=FALSE}
+# Filter for county-level data
+county_data_raw <- education_data %>%
+  filter(FIPS.Code %% 1000 != 0 & FIPS.Code != 0)
+
+# Process FIPS codes
+county_data_processed <- county_data_raw %>%
+  mutate(
+    GEOID = sprintf("%05d", FIPS.Code),
+    STATEFP = substr(GEOID, 1, 2),
+    COUNTYFP = substr(GEOID, 3, 5),
+    County_State = paste0(Area.name, ", ", State)
+  )
+
+# Extract county data for each education level
+county_results <- list()
+
+for (level_name in names(education_levels)) {
+  level_data <- tibble(GEOID = character(), County_State = character())
+  
+  for (year in names(education_levels[[level_name]])) {
+    pattern <- education_levels[[level_name]][[year]]
+    year_data <- county_data_processed %>%
+      filter(Attribute == pattern) %>%
+      select(GEOID, County_State, Value) %>%
+      rename(!!year := Value)
+    
+    if (nrow(level_data) == 0) {
+      level_data <- year_data
+    } else {
+      level_data <- level_data %>%
+        full_join(year_data, by = c("GEOID", "County_State"))
+    }
+  }
+  
+  county_results[[level_name]] <- level_data
+}
+
+# Filter for California, Texas, Washington, and Massachusetts counties
+ca_fips <- "06"
+tx_fips <- "48"
+wa_fips <- "53"
+ma_fips <- "25"
+
+four_state_results <- list()
+for (level_name in names(county_results)) {
+  four_state_data <- county_results[[level_name]] %>%
+    filter(substr(GEOID, 1, 2) %in% c(ca_fips, tx_fips, wa_fips, ma_fips)) %>%
+    mutate(State_Name = case_when(
+      substr(GEOID, 1, 2) == ca_fips ~ "California",
+      substr(GEOID, 1, 2) == tx_fips ~ "Texas",
+      substr(GEOID, 1, 2) == wa_fips ~ "Washington",
+      substr(GEOID, 1, 2) == ma_fips ~ "Massachusetts"
+    ))
+  
+  four_state_results[[level_name]] <- four_state_data
+}
+
+# Also calculate differences for county-level data
+for (level_name in names(four_state_results)) {
+  four_state_results[[level_name]] <- four_state_results[[level_name]] %>%
+    mutate(
+      diff_1970_1980 = `1980` - `1970`,
+      diff_1980_1990 = `1990` - `1980`, 
+      diff_1990_2000 = `2000` - `1990`,
+      diff_2000_2008 = `2008` - `2000`,
+      diff_2008_2019 = `2019` - `2008`
+    )
+}
+```
+
+## State-Level Absolute Value Maps (Code not shown here)
+```{r state_absolute_maps, echo=FALSE, fig.width=16, fig.height=12}
+# Function to create county absolute value maps for specific states
+create_county_absolute_map <- function(level_name, year, state_name, title_suffix) {
+  # Get state FIPS code
+  state_fips <- case_when(
+    state_name == "California" ~ "06",
+    state_name == "Texas" ~ "48", 
+    state_name == "Washington" ~ "53",
+    state_name == "Massachusetts" ~ "25"
+  )
+  
+  # Join with geographic data
+  map_data <- counties_sf %>%
+    filter(STATEFP == state_fips) %>%
+    left_join(four_state_results[[level_name]], by = "GEOID")
+  
+  # Handle missing data and calculate breaks
+  values <- map_data[[year]]
+  values <- values[!is.na(values)]
+  
+  if (length(values) == 0) {
+    return(ggplot() + ggtitle(paste("No data available for", title_suffix)))
+  }
+  
+  min_val <- floor(min(values, na.rm = TRUE) / 5) * 5
+  max_val <- ceiling(max(values, na.rm = TRUE) / 5) * 5
+  breaks <- seq(min_val, max_val, length.out = 9)
+  
+  # Create muted red-blue color palette (low values red, high values blue)
+  colors <- colorRampPalette(c("#CC6B3F", "#E19673", "#F0C2A8", "#FFEEDD", "#F0F0F0", "#D4DEED", "#B8C9DF", "#9BB3D1"))(11)
+  
+  # Create map
+  ggplot(map_data) +
+    geom_sf(aes(fill = !!sym(year)), color = "white", size = 0.1) +
+    scale_fill_gradientn(
+      colors = colors,
+      limits = c(min_val, max_val),
+      breaks = breaks,
+      labels = paste0(round(breaks, 1), "%"),
+      name = "Percentage",
+      na.value = "grey90"
+    ) +
+    labs(
+      title = title_suffix
+    ) +
+    theme_void() +
+    theme(
+      plot.title = element_text(size = 12, face = "bold", hjust = 0.5),
+      legend.position = "none",
+      plot.margin = margin(0.2, 0.2, 0.2, 0.2, "cm")
+    )
+}
+
+# Generate state-level absolute value maps (organized by state first, then education level)
+states_to_map <- c("California", "Texas", "Washington", "Massachusetts")
+years <- c("1970", "1980", "1990", "2000", "2008", "2019")
+
+for (state in states_to_map) {
+  cat("### ", state, "\n\n")
+  
+  for (level in names(education_levels)) {
+    cat("#### ", state, " - ", level_titles[level], "\n\n")
+    
+    # Create individual maps for each year
+    plot_list <- list()
+    for (i in seq_along(years)) {
+      year <- years[i]
+      p <- create_county_absolute_map(level, year, state, year)
+      plot_list[[i]] <- p
+    }
+    
+    # Create a shared legend using all year data for this state and level
+    state_fips <- case_when(
+      state == "California" ~ "06",
+      state == "Texas" ~ "48", 
+      state == "Washington" ~ "53",
+      state == "Massachusetts" ~ "25"
+    )
+    
+    legend_data <- counties_sf %>%
+      filter(STATEFP == state_fips) %>%
+      left_join(four_state_results[[level]], by = "GEOID")
+    
+    all_values <- c()
+    for (year in years) {
+      if (year %in% names(legend_data)) {
+        values <- legend_data[[year]]
+        values <- values[!is.na(values)]
+        all_values <- c(all_values, values)
+      }
+    }
+    
+    if (length(all_values) > 0) {
+      min_val <- floor(min(all_values, na.rm = TRUE) / 5) * 5
+      max_val <- ceiling(max(all_values, na.rm = TRUE) / 5) * 5
+      breaks <- seq(min_val, max_val, length.out = 9)
+      colors <- colorRampPalette(c("#CC6B3F", "#E19673", "#F0C2A8", "#FFEEDD", "#F0F0F0", "#D4DEED", "#B8C9DF", "#9BB3D1"))(11)
+      
+      # Create a dummy plot for legend
+      legend_plot <- ggplot(legend_data) +
+        geom_sf(aes(fill = !!sym("2019")), color = "white", size = 0.1) +
+        scale_fill_gradientn(
+          colors = colors,
+          limits = c(min_val, max_val),
+          breaks = breaks,
+          labels = paste0(round(breaks, 1), "%"),
+          name = "Percentage",
+          na.value = "grey90"
+        ) +
+        theme_void() +
+        theme(legend.position = "right")
+      
+      # Extract legend
+      legend <- get_legend(legend_plot)
+      
+      # Combine plots in 2x3 grid with shared legend
+      combined_plot <- plot_grid(
+        plot_grid(plotlist = plot_list, ncol = 3, nrow = 2),
+        legend,
+        ncol = 2,
+        rel_widths = c(1, 0.15)
+      )
+      
+      # Add overall title
+      title <- ggdraw() + 
+        draw_label(paste(state, "-", level_titles[level], "Over Time"), 
+                   fontface = 'bold', size = 16)
+      
+      final_plot <- plot_grid(title, combined_plot, ncol = 1, rel_heights = c(0.08, 1))
+      
+      print(final_plot)
+    } else {
+      cat("No data available for", state, "-", level_titles[level], "\n")
+    }
+    
+    cat("\n\n")
+  }
+}
+```
+
+
+# Correlation Analysis
+
+Correlation analysis support above observations and suggest another interesting fact:
+
+1. In table 2 we can observe strong correlation between urban and college graduate, as well as rural with hs/some college, while the corr for below hs fluctuates as these people are just shrinking.
+
+(Note that for UIC, higher = more rural, lower = more urban)
+
+2. In table 1 we examine 'path dependence', this is actually a correlation metric of quantile across years. I initially meet this way of examine in development economies.
+From the table, we can observe:
+
+2a: the two polar has greatest correlation overall. The places with best economic growth also views greatest path dependence.
+
+2b: The greatest path dependence occurred from 2000 to 2019. This is strong across all education level. The most straight forward explanation is, the overall pattern of growth in the past two decades remain the same
+(and leads to great polarization) in this country. What is that pattern? I would say selling software across the globe and buy stuffs from China!
+
+## County Quintile Calculation (Code not shown here)
+
+```{r calculate_quintiles, echo=FALSE}
+# Function to calculate quintiles within each state
+calculate_state_quintiles <- function(data, year_col) {
+  data %>%
+    group_by(State_Name) %>%
+    mutate(
+      quintile = cut(
+        !!sym(year_col),
+        breaks = quantile(!!sym(year_col), probs = seq(0, 1, 0.2), na.rm = TRUE, type = 7),
+        labels = c("1st (Lowest)", "2nd", "3rd", "4th", "5th (Highest)"),
+        include.lowest = TRUE,
+        ordered_result = TRUE
+      )
+    ) %>%
+    ungroup()
+}
+
+# Calculate quintiles for each education level and year
+quintile_results <- list()
+years <- c("1970", "1980", "1990", "2000", "2008", "2019")
+
+for (level_name in names(four_state_results)) {
+  quintile_data <- four_state_results[[level_name]]
+  
+  for (year in years) {
+    if (year %in% names(quintile_data)) {
+      quintile_data <- calculate_state_quintiles(quintile_data, year)
+      names(quintile_data)[names(quintile_data) == "quintile"] <- paste0("quintile_", year)
+    }
+  }
+  
+  quintile_results[[level_name]] <- quintile_data
+}
+```
+
+## Correlation Analysis Setup (Code not shown here)
+
+```{r correlation_setup, echo=FALSE}
+# Extract Urban Influence Codes
+urban_codes <- county_data_processed %>%
+  filter(grepl("2023 Rural-urban Continuum Code|2024 Urban Influence Code", Attribute)) %>%
+  select(GEOID, Attribute, Value) %>%
+  pivot_wider(names_from = Attribute, values_from = Value) %>%
+  rename(
+    rural_urban_2023 = `2023 Rural-urban Continuum Code`,
+    urban_influence_2024 = `2024 Urban Influence Code`
+  )
+
+# Prepare correlation data for the four states
+correlation_data <- list()
+
+for (level_name in names(quintile_results)) {
+  # Convert quintiles to numeric ranks
+  level_data <- quintile_results[[level_name]] %>%
+    select(GEOID, State_Name, starts_with("quintile_")) %>%
+    mutate(across(starts_with("quintile_"), ~as.numeric(.)))
+  
+  # Add urban codes
+  level_data <- level_data %>%
+    left_join(urban_codes, by = "GEOID")
+  
+  correlation_data[[level_name]] <- level_data
+}
+```
+
+## Temporal Correlation Analysis (Code not shown here)
+
+```{r temporal_correlations, echo=FALSE}
+# Calculate correlations between quintile rankings across years
+temporal_corr_results <- list()
+
+comparison_pairs <- list(
+  c("1970", "2000"),
+  c("1970", "2019"), 
+  c("2000", "2019")
+)
+
+for (level_name in names(correlation_data)) {
+  level_corr <- list()
+  
+  for (pair in comparison_pairs) {
+    year1 <- paste0("quintile_", pair[1])
+    year2 <- paste0("quintile_", pair[2])
+    
+    # Calculate correlation for each state separately
+    ca_data <- correlation_data[[level_name]] %>% filter(State_Name == "California")
+    tx_data <- correlation_data[[level_name]] %>% filter(State_Name == "Texas")
+    wa_data <- correlation_data[[level_name]] %>% filter(State_Name == "Washington")
+    ma_data <- correlation_data[[level_name]] %>% filter(State_Name == "Massachusetts")
+    
+    ca_corr <- cor(ca_data[[year1]], ca_data[[year2]], use = "complete.obs")
+    tx_corr <- cor(tx_data[[year1]], tx_data[[year2]], use = "complete.obs")
+    wa_corr <- cor(wa_data[[year1]], wa_data[[year2]], use = "complete.obs")
+    ma_corr <- cor(ma_data[[year1]], ma_data[[year2]], use = "complete.obs")
+    
+    pair_name <- paste(pair[1], "vs", pair[2])
+    level_corr[[pair_name]] <- c(California = ca_corr, Texas = tx_corr, Washington = wa_corr, Massachusetts = ma_corr)
+  }
+  
+  temporal_corr_results[[level_name]] <- level_corr
+}
+
+# Create abbreviated education level names
+level_abbrev <- c("bachelors_plus" = "Bach+",
+                  "some_college" = "SomeColl", 
+                  "less_than_hs" = "< HS",
+                  "hs_only" = "HS Only")
+
+# Create temporal correlation table
+temporal_corr_table <- data.frame()
+
+for (level in names(temporal_corr_results)) {
+  for (comparison in names(temporal_corr_results[[level]])) {
+    ca_corr <- round(temporal_corr_results[[level]][[comparison]]["California"], 3)
+    tx_corr <- round(temporal_corr_results[[level]][[comparison]]["Texas"], 3)
+    wa_corr <- round(temporal_corr_results[[level]][[comparison]]["Washington"], 3)
+    ma_corr <- round(temporal_corr_results[[level]][[comparison]]["Massachusetts"], 3)
+    
+    temporal_corr_table <- rbind(temporal_corr_table, 
+                                data.frame(
+                                  Education_Level = level_abbrev[level],
+                                  Comparison = comparison,
+                                  California = ca_corr,
+                                  Texas = tx_corr,
+                                  Washington = wa_corr,
+                                  Massachusetts = ma_corr
+                                ))
+  }
+}
+
+kable(temporal_corr_table, 
+      caption = "Temporal Correlations of County Quintile Rankings",
+      col.names = c("Edu Level", "Time Comp", "CA", "TX", "WA", "MA")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE, font_size = 12)
+```
+
+## Urban Influence Code Correlations (Code not shown here)
+
+```{r urban_correlations, echo=FALSE}
+# Calculate correlations between 2019 quintiles and urban codes
+urban_corr_results <- list()
+
+for (level_name in names(correlation_data)) {
+  level_data <- correlation_data[[level_name]]
+  
+  # Calculate correlations for each state
+  ca_data <- level_data %>% filter(State_Name == "California")
+  tx_data <- level_data %>% filter(State_Name == "Texas")
+  wa_data <- level_data %>% filter(State_Name == "Washington")
+  ma_data <- level_data %>% filter(State_Name == "Massachusetts")
+  
+  # Correlations with 2023 Rural-urban Continuum Code
+  ca_rural_corr <- cor(ca_data$quintile_2019, ca_data$rural_urban_2023, use = "complete.obs")
+  tx_rural_corr <- cor(tx_data$quintile_2019, tx_data$rural_urban_2023, use = "complete.obs")
+  wa_rural_corr <- cor(wa_data$quintile_2019, wa_data$rural_urban_2023, use = "complete.obs")
+  ma_rural_corr <- cor(ma_data$quintile_2019, ma_data$rural_urban_2023, use = "complete.obs")
+  
+  # Correlations with 2024 Urban Influence Code
+  ca_urban_corr <- cor(ca_data$quintile_2019, ca_data$urban_influence_2024, use = "complete.obs")
+  tx_urban_corr <- cor(tx_data$quintile_2019, tx_data$urban_influence_2024, use = "complete.obs")
+  wa_urban_corr <- cor(wa_data$quintile_2019, wa_data$urban_influence_2024, use = "complete.obs")
+  ma_urban_corr <- cor(ma_data$quintile_2019, ma_data$urban_influence_2024, use = "complete.obs")
+  
+  urban_corr_results[[level_name]] <- list(
+    rural_urban_2023 = c(California = ca_rural_corr, Texas = tx_rural_corr, Washington = wa_rural_corr, Massachusetts = ma_rural_corr),
+    urban_influence_2024 = c(California = ca_urban_corr, Texas = tx_urban_corr, Washington = wa_urban_corr, Massachusetts = ma_urban_corr)
+  )
+}
+
+# Create abbreviated urban code type names
+code_abbrev <- c("rural_urban_2023" = "Rural-Urb '23",
+                 "urban_influence_2024" = "Urb Infl '24")
+
+# Create urban correlation table
+urban_corr_table <- data.frame()
+
+for (level in names(urban_corr_results)) {
+  for (code_type in names(urban_corr_results[[level]])) {
+    ca_corr <- round(urban_corr_results[[level]][[code_type]]["California"], 3)
+    tx_corr <- round(urban_corr_results[[level]][[code_type]]["Texas"], 3)
+    wa_corr <- round(urban_corr_results[[level]][[code_type]]["Washington"], 3)
+    ma_corr <- round(urban_corr_results[[level]][[code_type]]["Massachusetts"], 3)
+    
+    urban_corr_table <- rbind(urban_corr_table,
+                             data.frame(
+                               Education_Level = level_abbrev[level],
+                               Urban_Code_Type = code_abbrev[code_type],
+                               California = ca_corr,
+                               Texas = tx_corr,
+                               Washington = wa_corr,
+                               Massachusetts = ma_corr
+                             ))
+  }
+}
+
+kable(urban_corr_table,
+      caption = "Correlations between 2019 Education Quintiles and Urban Influence Codes",
+      col.names = c("Edu Level", "Code Type", "CA", "TX", "WA", "MA")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE, font_size = 12)
+```
+
+# Political Implementation
+Can the path dependence we observed (especially the strong 2000-2019 correlations) correlate with the political shift we observe post 2008? 
+
+The following compares the 2019-23 rotating statistics with election result of 2024.
+
+Anyhow I feel like this provides some hint to understand how the path we have taken shaped current, and our current shape y=our future... Though what I present here is definitely rough......
+
+```{r education_vs_politics, echo=FALSE, fig.width=16, fig.height=8}
+library(magick)
+library(grid)
+
+# Function to create 2019 bachelor's degree maps for side-by-side comparison
+create_education_map_for_comparison <- function(state_name) {
+  # Get state FIPS code
+  state_fips <- case_when(
+    state_name == "California" ~ "06",
+    state_name == "Texas" ~ "48", 
+    state_name == "Washington" ~ "53",
+    state_name == "Massachusetts" ~ "25"
+  )
+  
+  # Join with geographic data
+  map_data <- counties_sf %>%
+    filter(STATEFP == state_fips) %>%
+    left_join(four_state_results[["bachelors_plus"]], by = "GEOID")
+  
+  # Handle missing data and calculate breaks
+  values <- map_data[["2019"]]
+  values <- values[!is.na(values)]
+  
+  if (length(values) == 0) {
+    return(ggplot() + ggtitle(paste("No data available for", state_name)))
+  }
+  
+  min_val <- floor(min(values, na.rm = TRUE) / 5) * 5
+  max_val <- ceiling(max(values, na.rm = TRUE) / 5) * 5
+  breaks <- seq(min_val, max_val, length.out = 9)
+  
+  # Create muted red-blue color palette (low education red, high education blue)
+  colors <- colorRampPalette(c("#CC6B3F", "#E19673", "#F0C2A8", "#FFEEDD", "#F0F0F0", "#D4DEED", "#B8C9DF", "#9BB3D1"))(11)
+  
+  # Create map
+  ggplot(map_data) +
+    geom_sf(aes(fill = `2019`), color = "white", size = 0.1) +
+    scale_fill_gradientn(
+      colors = colors,
+      limits = c(min_val, max_val),
+      breaks = breaks,
+      labels = paste0(round(breaks, 1), "%"),
+      name = "% Bachelor's+",
+      na.value = "grey90"
+    ) +
+    labs(
+      title = paste("Education:", state_name)
+    ) +
+    theme_void() +
+    theme(
+      plot.title = element_text(size = 14, face = "bold", hjust = 0.5),
+      legend.position = "bottom",
+      legend.key.width = unit(1, "cm"),
+      legend.key.height = unit(0.3, "cm"),
+      plot.margin = margin(0.2, 0.2, 0.2, 0.2, "cm")
+    )
+}
+
+# Function to load and prepare election map
+create_election_plot <- function(state_name) {
+  # Map state names to file names
+  filename <- case_when(
+    state_name == "California" ~ "CA.png",
+    state_name == "Texas" ~ "TX.png", 
+    state_name == "Washington" ~ "WA.png",
+    state_name == "Massachusetts" ~ "MA.png"
+  )
+  
+  # Create a placeholder plot with title
+  ggplot() + 
+    labs(title = paste("Election Results:", state_name)) +
+    theme_void() +
+    theme(
+      plot.title = element_text(size = 14, face = "bold", hjust = 0.5),
+      plot.margin = margin(0.2, 0.2, 0.2, 0.2, "cm")
+    ) +
+    annotation_custom(
+      rasterGrob(image_read(filename), 
+                width = unit(1, "npc"), 
+                height = unit(0.9, "npc")),
+      xmin = -Inf, xmax = Inf, ymin = -Inf, ymax = Inf
+    )
+}
+
+# Create comparisons for each state
+states_to_compare <- c("California", "Texas", "Washington", "Massachusetts")
+
+for (state in states_to_compare) {
+  cat("### ", state, " - Education vs Election Results\n\n")
+  
+  # Create education map
+  edu_map <- create_education_map_for_comparison(state)
+  
+  # Create election map
+  election_map <- create_election_plot(state)
+  
+  # Combine side by side
+  combined_plot <- plot_grid(
+    edu_map, 
+    election_map, 
+    ncol = 2, 
+    rel_widths = c(1, 1),
+    align = "h"
+  )
+  
+  print(combined_plot)
+  cat("\n\n")
+}
+```
+
+
+# Summary Statistics for reference
+
+```{r summary_stats, echo=FALSE}
+# Summary of state-level changes by education level
+state_summary <- data.frame()
+
+for (level in names(state_results)) {
+  level_data <- state_results[[level]]
+  
+  for (period in diff_periods) {
+    values <- level_data[[period]]
+    values <- values[!is.na(values)]
+    
+    if (length(values) > 0) {
+      state_summary <- rbind(state_summary,
+                           data.frame(
+                             Education_Level = level_abbrev[level],
+                             Period = gsub("diff_", "", period),
+                             Mean_Change = round(mean(values), 2),
+                             Median_Change = round(median(values), 2),
+                             SD_Change = round(sd(values), 2),
+                             Min_Change = round(min(values), 2),
+                             Max_Change = round(max(values), 2)
+                           ))
+    }
+  }
+}
+
+kable(state_summary,
+      caption = "Summary of State-Level Education Changes by Period",
+      col.names = c("Edu Level", "Period", "Mean", "Median", "SD", "Min", "Max")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE, font_size = 12)
+```
