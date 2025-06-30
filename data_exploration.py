@@ -11,11 +11,21 @@ from collections import defaultdict
 def load_education_data(filename):
     """加载教育数据"""
     data = []
-    with open(filename, 'r', encoding='utf-8') as file:
-        reader = csv.DictReader(file)
-        for row in reader:
-            data.append(row)
-    return data
+    # 尝试不同的编码方式
+    encodings = ['utf-8', 'latin-1', 'cp1252', 'iso-8859-1']
+    
+    for encoding in encodings:
+        try:
+            with open(filename, 'r', encoding=encoding) as file:
+                reader = csv.DictReader(file)
+                for row in reader:
+                    data.append(row)
+                print(f"成功使用 {encoding} 编码读取数据")
+                return data
+        except UnicodeDecodeError:
+            continue
+    
+    raise ValueError("无法读取文件，尝试了多种编码方式")
 
 def filter_state_data(data):
     """提取州级数据（FIPS codes divisible by 1000, but not 0）"""
